@@ -84,17 +84,17 @@ SINCE_ESCAPED="${SINCE_ESCAPED//\"/\\\"}"
 GUILD_ESCAPED="${GUILD//\"/\\\"}"
 CHANNEL_ESCAPED="${CHANNEL//\"/\\\"}"
 
-read -r -d '' JS <<EOF || true
-const dbname = "$MONGODB_DB";
-const sinceRaw = "$SINCE_ESCAPED";
-const guildId = "$GUILD_ESCAPED";
-const channelId = "$CHANNEL_ESCAPED";
-const limit = $LIMIT;
-const format = "$FORMAT";
+JS=$(cat <<'EOF'
+const dbname = __DBNAME__;
+const sinceRaw = __SINCE__;
+const guildId = __GUILD__;
+const channelId = __CHANNEL__;
+const limit = __LIMIT__;
+const format = __FORMAT__;
 
 function parseSince(v) {
   if (!v) throw new Error("--since is required");
-  if (/^\\d{11,}$/.test(v)) return Number(v);
+  if (/^\d{11,}$/.test(v)) return Number(v);
   const ms = Date.parse(v);
   if (!Number.isFinite(ms)) throw new Error(`Invalid --since timestamp: ${v}`);
   return ms;
@@ -104,7 +104,7 @@ const sinceMs = parseSince(sinceRaw);
 const msgCol = db.getSiblingDB(dbname).getCollection('messages');
 const chCol = db.getSiblingDB(dbname).getCollection('channels');
 
-const filter = { timestamp_ms: { \$gte: sinceMs } };
+const filter = { timestamp_ms: { $gte: sinceMs } };
 if (guildId) filter.guild_id = guildId;
 if (channelId) filter.channel_id = channelId;
 
@@ -156,6 +156,14 @@ cursor.forEach(d => {
   }
 });
 EOF
+)
+
+JS="${JS//__DBNAME__/\"$MONGODB_DB\"}"
+JS="${JS//__SINCE__/\"$SINCE_ESCAPED\"}"
+JS="${JS//__GUILD__/\"$GUILD_ESCAPED\"}"
+JS="${JS//__CHANNEL__/\"$CHANNEL_ESCAPED\"}"
+JS="${JS//__LIMIT__/$LIMIT}"
+JS="${JS//__FORMAT__/\"$FORMAT\"}"
 
 docker_cmd() {
   if command -v docker >/dev/null 2>&1; then

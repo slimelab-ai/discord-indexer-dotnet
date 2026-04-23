@@ -21,7 +21,7 @@ set -euo pipefail
 #   sudo systemctl daemon-reload
 #   sudo systemctl restart discord-indexer.service
 
-REPO="${REPO:-marvin-mira/discord-indexer-dotnet}"
+REPO="${REPO:-slimelab-ai/discord-indexer-dotnet}"
 VERSION="${VERSION:-latest}"
 INSTALL_SYSTEMD="${INSTALL_SYSTEMD:-1}"
 

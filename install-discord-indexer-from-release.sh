@@ -21,7 +21,7 @@ set -euo pipefail
 #   sudo systemctl daemon-reload
 #   sudo systemctl restart discord-indexer.service
 
-REPO="${REPO:-patrick-slimelab/discord-indexer-dotnet}"
+REPO="${REPO:-marvin-mira/discord-indexer-dotnet}"
 VERSION="${VERSION:-latest}"
 INSTALL_SYSTEMD="${INSTALL_SYSTEMD:-1}"
 
@@ -84,21 +84,20 @@ echo "[install] Installed:" \
   "/usr/local/bin/discord-indexer-delta"
 
 if [[ "$INSTALL_SYSTEMD" == "1" ]]; then
-  echo "[install] Installing/updating systemd service + env file (via existing installer)"
-  # Reuse the existing host installer for unit + mongo-container setup.
-  # It will overwrite the binary, but that's OK (same version).
-  # If you want systemd only without docker-mongo, we can add a separate unit-only path.
+  echo "[install] Installing/updating systemd service + env file"
   if [[ -f "/etc/discord-indexer/indexer.env" ]]; then
-    echo "[install] Found existing /etc/discord-indexer/indexer.env (keeping)"
+    echo "[install] Found existing /etc/discord-indexer/indexer.env; reusing values"
+    set -a
+    # shellcheck disable=SC1091
+    source /etc/discord-indexer/indexer.env
+    set +a
   fi
 
   if [[ -x "./install-discord-indexer-service.sh" ]]; then
-    # When running from repo checkout
-    ./install-discord-indexer-service.sh
+    SKIP_BUILD=1 BIN_SRC=/usr/local/bin/discord-indexer REPO_DIR="$TMP" ./install-discord-indexer-service.sh
   else
-    echo "[install] NOTE: systemd installer script not present in this temp dir."
-    echo "[install] If you want systemd managed service, run the repo installer:" >&2
-    echo "         sudo -E ./install-discord-indexer-service.sh" >&2
+    echo "ERROR: bundled install-discord-indexer-service.sh missing from release asset" >&2
+    exit 1
   fi
 fi
 

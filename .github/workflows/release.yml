@@ -33,14 +33,16 @@ jobs:
           # Include helper CLI scripts in the release artifacts
           cp -v ./discord-indexer-search out/discord-indexer-search
           cp -v ./discord-indexer-delta out/discord-indexer-delta
-          chmod +x out/discord-indexer-search out/discord-indexer-delta
+          cp -v ./install-discord-indexer-service.sh out/install-discord-indexer-service.sh
+          cp -v ./install-discord-indexer-from-release.sh out/install-discord-indexer-from-release.sh
+          chmod +x out/discord-indexer-search out/discord-indexer-delta out/install-discord-indexer-service.sh out/install-discord-indexer-from-release.sh
 
       - name: Package
         run: |
           set -euo pipefail
           cd out
-          sha256sum discord-indexer discord-indexer-search discord-indexer-delta > discord-indexer-linux-x64.sha256
-          tar -czf discord-indexer-linux-x64.tar.gz discord-indexer discord-indexer-search discord-indexer-delta discord-indexer-linux-x64.sha256
+          sha256sum discord-indexer discord-indexer-search discord-indexer-delta install-discord-indexer-service.sh install-discord-indexer-from-release.sh > discord-indexer-linux-x64.sha256
+          tar -czf discord-indexer-linux-x64.tar.gz discord-indexer discord-indexer-search discord-indexer-delta install-discord-indexer-service.sh install-discord-indexer-from-release.sh discord-indexer-linux-x64.sha256
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

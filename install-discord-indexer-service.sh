@@ -9,7 +9,7 @@ set -euo pipefail
 #     - otherwise uses Docker (build stage) if available
 # - Installs binary to /usr/local/bin/discord-indexer
 # - Writes secrets to /etc/discord-indexer/indexer.env (0600 root:root)
-# - Installs + starts systemd unit discord-indexer.service
+# - Installs + starts systemd units for MongoDB (optional) and discord-indexer.service
 
 # ====== CONFIG (override via env) ======
 REPO_DIR="${REPO_DIR:-$(pwd)}"
@@ -72,9 +72,9 @@ if [[ "$INSTALL_MONGO" == "1" ]]; then
     # If MONGODB_URI was overridden to a non-local URI, don't try to manage mongo.
     if [[ "$MONGODB_URI" == mongodb://127.0.0.1:* || "$MONGODB_URI" == mongodb://localhost:* ]]; then
       # Check for port conflicts
-      if ss -ltn 2>/dev/null | awk '{print $4}' | rg -q "(^|:)${MONGO_PORT}$"; then
+      if ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "(^|:)${MONGO_PORT}$"; then
         # If the mongo container is already running on that port, this is fine; otherwise it's a conflict.
-        if ! docker ps --format '{{.Names}}' | rg -q "^${MONGO_CONTAINER_NAME}$"; then
+        if ! docker ps --format '{{.Names}}' | grep -Eq "^${MONGO_CONTAINER_NAME}$"; then
           die "Port ${MONGO_PORT} is already in use. Set MONGO_PORT=27018 (and rerun), or set MONGODB_URI to an external Mongo."
         fi
       fi
@@ -83,7 +83,7 @@ if [[ "$INSTALL_MONGO" == "1" ]]; then
       docker volume inspect "$MONGO_VOLUME_NAME" >/dev/null 2>&1 || docker volume create "$MONGO_VOLUME_NAME" >/dev/null
 
       # Create/start container if missing
-      if ! docker ps -a --format '{{.Names}}' | rg -q "^${MONGO_CONTAINER_NAME}$"; then
+      if ! docker ps -a --format '{{.Names}}' | grep -Eq "^${MONGO_CONTAINER_NAME}$"; then
         echo "[install] Starting dedicated MongoDB container: ${MONGO_CONTAINER_NAME} (127.0.0.1:${MONGO_PORT})"
         docker run -d \
           --name "$MONGO_CONTAINER_NAME" \
@@ -92,7 +92,7 @@ if [[ "$INSTALL_MONGO" == "1" ]]; then
           -v "${MONGO_VOLUME_NAME}:/data/db" \
           mongo:6 >/dev/null
       else
-        if ! docker ps --format '{{.Names}}' | rg -q "^${MONGO_CONTAINER_NAME}$"; then
+        if ! docker ps --format '{{.Names}}' | grep -Eq "^${MONGO_CONTAINER_NAME}$"; then
           echo "[install] Starting existing MongoDB container: ${MONGO_CONTAINER_NAME}"
           docker start "$MONGO_CONTAINER_NAME" >/dev/null
         fi
@@ -193,6 +193,44 @@ EOF
 sudo install -o root -g root -m 0600 "$tmp_env" "$ENV_FILE"
 rm -f "$tmp_env"
 
+# ====== optional systemd-managed MongoDB ======
+MANAGED_MONGO=0
+MONGO_UNIT_NAME="discord-indexer-mongo.service"
+MONGO_WAIT_CMD="/bin/bash -lc 'for i in {1..120}; do (echo >/dev/tcp/127.0.0.1/${MONGO_PORT}) >/dev/null 2>&1 && exit 0; sleep 0.5; done; echo \"Mongo not ready\" >&2; exit 1'"
+
+if [[ "$INSTALL_MONGO" == "1" && ( "$MONGODB_URI" == mongodb://127.0.0.1:* || "$MONGODB_URI" == mongodb://localhost:* ) ]]; then
+  if need_cmd docker; then
+    MANAGED_MONGO=1
+    echo "[install] Installing systemd Mongo unit -> /etc/systemd/system/${MONGO_UNIT_NAME}"
+    tmp_mongo_unit="$(mktemp)"
+    cat >"$tmp_mongo_unit" <<EOF
+[Unit]
+Description=discord-indexer MongoDB (docker container)
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/bin/docker volume create ${MONGO_VOLUME_NAME}
+ExecStartPre=-/usr/bin/docker stop ${MONGO_CONTAINER_NAME}
+ExecStartPre=-/usr/bin/docker rm ${MONGO_CONTAINER_NAME}
+ExecStart=/usr/bin/docker run --rm --name ${MONGO_CONTAINER_NAME} -p 127.0.0.1:${MONGO_PORT}:27017 -v ${MONGO_VOLUME_NAME}:/data/db mongo:6
+ExecStop=-/usr/bin/docker stop ${MONGO_CONTAINER_NAME}
+Restart=always
+RestartSec=3
+TimeoutStartSec=60
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    sudo install -o root -g root -m 0644 "$tmp_mongo_unit" "/etc/systemd/system/${MONGO_UNIT_NAME}"
+    rm -f "$tmp_mongo_unit"
+  else
+    echo "WARN: INSTALL_MONGO=1 but docker is not installed; no MongoDB systemd unit installed." >&2
+  fi
+fi
+
 # ====== systemd unit ======
 echo "[install] Installing systemd unit -> /etc/systemd/system/${UNIT_NAME}"
 tmp_unit="$(mktemp)"
@@ -201,6 +239,16 @@ cat >"$tmp_unit" <<EOF
 Description=Discord Indexer (.NET)
 After=network-online.target
 Wants=network-online.target
+EOF
+
+if [[ "$MANAGED_MONGO" == "1" ]]; then
+  cat >>"$tmp_unit" <<EOF
+Requires=${MONGO_UNIT_NAME}
+After=${MONGO_UNIT_NAME}
+EOF
+fi
+
+cat >>"$tmp_unit" <<EOF
 
 [Service]
 Type=simple
@@ -211,7 +259,7 @@ EnvironmentFile=${ENV_FILE}
 Environment=MONGO_PORT=${MONGO_PORT}
 
 # Wait for Mongo to accept TCP connections (avoid crash loops at boot)
-ExecStartPre=/bin/bash -lc 'for i in {1..120}; do (echo >/dev/tcp/127.0.0.1/'"$MONGO_PORT"') >/dev/null 2>&1 && exit 0; sleep 0.5; done; echo "Mongo not ready" >&2; exit 1'
+ExecStartPre=${MONGO_WAIT_CMD}
 
 StandardOutput=append:${LOG_DIR}/discord-indexer.log
 StandardError=append:${LOG_DIR}/discord-indexer.err
@@ -238,8 +286,11 @@ sudo install -o root -g root -m 0644 "$tmp_unit" "/etc/systemd/system/${UNIT_NAM
 rm -f "$tmp_unit"
 
 # ====== enable + start ======
-echo "[install] Enabling + starting ${UNIT_NAME}"
+echo "[install] Enabling + starting systemd units"
 sudo systemctl daemon-reload
+if [[ "$MANAGED_MONGO" == "1" ]]; then
+  sudo systemctl enable --now "${MONGO_UNIT_NAME}"
+fi
 sudo systemctl enable --now "${UNIT_NAME}"
 
 echo

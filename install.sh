@@ -388,15 +388,21 @@ Requires=docker.service
 After=docker.service
 
 [Service]
-Type=oneshot
-RemainAfterExit=yes
+Type=simple
 
 # Create volume (idempotent)
 ExecStartPre=-/usr/bin/docker volume create discord_indexer_mongo
 
-# Create container if missing; otherwise start it
-ExecStart=/bin/sh -lc 'if /usr/bin/docker ps -a --format "{{.Names}}" | grep -qx discord-indexer-mongo; then /usr/bin/docker start discord-indexer-mongo; else /usr/bin/docker run -d --name discord-indexer-mongo -p 127.0.0.1:27017:27017 -v discord_indexer_mongo:/data/db --restart unless-stopped mongo:6; fi'
+# Run mongod in the foreground so systemd tracks the real container lifetime.
+# Do not use docker --restart here; systemd is the supervisor.
+ExecStartPre=-/usr/bin/docker stop discord-indexer-mongo
+ExecStartPre=-/usr/bin/docker rm discord-indexer-mongo
+ExecStart=/usr/bin/docker run --rm --name discord-indexer-mongo -p 127.0.0.1:27017:27017 -v discord_indexer_mongo:/data/db mongo:6
 ExecStop=-/usr/bin/docker stop discord-indexer-mongo
+Restart=always
+RestartSec=3
+TimeoutStartSec=60
+TimeoutStopSec=30
 
 [Install]
 WantedBy=multi-user.target
@@ -409,8 +415,8 @@ Description=discord-indexer (Discord -> MongoDB)
 After=network-online.target
 Wants=network-online.target
 
-# If present, bring up the docker-managed MongoDB first
-Wants=discord-indexer-mongo.service
+# If present, require the docker-managed MongoDB and start only after it is up.
+Requires=discord-indexer-mongo.service
 After=discord-indexer-mongo.service
 
 [Service]
@@ -419,8 +425,9 @@ User=discord-indexer
 Group=discord-indexer
 EnvironmentFile=/etc/discord-indexer/indexer.env
 
-# Ensure log file exists and is world-readable
+# Ensure log file exists and is world-readable, then wait for Mongo to accept TCP connections.
 ExecStartPre=/bin/sh -lc 'mkdir -p /var/log/discord-indexer && touch /var/log/discord-indexer/discord-indexer.log && chown discord-indexer:discord-indexer /var/log/discord-indexer/discord-indexer.log && chmod 0644 /var/log/discord-indexer/discord-indexer.log'
+ExecStartPre=/bin/bash -lc 'for i in {1..90}; do (echo >/dev/tcp/127.0.0.1/27017) >/dev/null 2>&1 && exit 0; sleep 0.5; done; echo "Mongo not ready" >&2; exit 1'
 
 ExecStart=/usr/local/bin/discord-indexer
 Restart=always

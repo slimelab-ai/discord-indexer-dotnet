@@ -63,7 +63,9 @@ die() {
 }
 
 # ====== checks ======
-[[ -f "$PROJECT_FILE" ]] || die "Could not find project file: $PROJECT_FILE (run from repo root)"
+if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
+  [[ -f "$PROJECT_FILE" ]] || die "Could not find project file: $PROJECT_FILE (run from repo root)"
+fi
 [[ -n "$DISCORD_BOT_TOKEN" ]] || die "DISCORD_BOT_TOKEN is required (export it before running)."
 
 # ====== ensure mongo (optional) ======

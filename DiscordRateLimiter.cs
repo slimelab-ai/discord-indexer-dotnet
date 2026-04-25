@@ -23,6 +23,18 @@ namespace DiscordIndexer;
 /// </summary>
 public sealed class DiscordRateLimiter
 {
+    private readonly HttpClient _http;
+
+    public DiscordRateLimiter()
+        : this(Program.Http)
+    {
+    }
+
+    public DiscordRateLimiter(HttpClient http)
+    {
+        _http = http ?? throw new ArgumentNullException(nameof(http));
+    }
+
     private sealed class Bucket
     {
         public readonly SemaphoreSlim Gate = new(1, 1);
@@ -52,7 +64,7 @@ public sealed class DiscordRateLimiter
             // If bucket has a delay, honor it.
             await WaitUntilAsync(bucket.NextAllowedUtcMs);
 
-            var resp = await Program.Http.GetAsync(url);
+            var resp = await _http.GetAsync(url);
 
             // Update limiter state from headers/body.
             await ObserveAsync(routeKey, bucket, resp);

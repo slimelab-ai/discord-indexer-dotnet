@@ -27,6 +27,7 @@ public class Program
     private static int _backfillPageSize = 100; // Discord max
     private static int _backfillWorkers = 2;
     private static int _backfillRequestDelayMs = 500;
+    private static TimeSpan _backfillClaimTimeout = BackfillState.DefaultClaimTimeout;
 
     public static async Task Main(string[] args)
     {
@@ -50,6 +51,8 @@ public class Program
         _backfillPageSize = int.Parse(GetEnv("INDEXER_BACKFILL_PAGE_SIZE", _backfillPageSize.ToString()));
         _backfillWorkers = int.Parse(GetEnv("INDEXER_BACKFILL_WORKERS", _backfillWorkers.ToString()));
         _backfillRequestDelayMs = int.Parse(GetEnv("INDEXER_BACKFILL_REQUEST_DELAY_MS", _backfillRequestDelayMs.ToString()));
+        var claimTimeoutMs = int.Parse(GetEnv("INDEXER_BACKFILL_CLAIM_TIMEOUT_MS", ((int)BackfillState.DefaultClaimTimeout.TotalMilliseconds).ToString()));
+        _backfillClaimTimeout = TimeSpan.FromMilliseconds(Math.Max(1000, claimTimeoutMs));
 
         if (_backfillPageSize is < 1 or > 100) _backfillPageSize = 100;
 
@@ -315,9 +318,13 @@ public class Program
     {
         if (_backfill == null) return null;
 
+        var staleCutoff = DateTime.UtcNow.Subtract(_backfillClaimTimeout);
         var filter = Builders<BsonDocument>.Filter.And(
             Builders<BsonDocument>.Filter.Eq("done", false),
-            Builders<BsonDocument>.Filter.Ne("claimed", true)
+            Builders<BsonDocument>.Filter.Or(
+                Builders<BsonDocument>.Filter.Ne("claimed", true),
+                Builders<BsonDocument>.Filter.Lt("updated_at", staleCutoff)
+            )
         );
 
         var update = Builders<BsonDocument>.Update
@@ -427,13 +434,18 @@ public class Program
             return (before, false, 0, 1, preDelayMs);
 
         var msgs = root.EnumerateArray().ToList();
-        if (msgs.Count == 0)
+        var messageIds = msgs
+            .Select(m => m.TryGetProperty("id", out var idEl) ? idEl.GetString() : null)
+            .Where(id => !string.IsNullOrEmpty(id))
+            .Select(id => id!)
+            .ToArray();
+        var pageResult = BackfillState.ApplyFetchedPage(before, messageIds);
+
+        if (pageResult.Done)
         {
             Console.WriteLine($"Backfill done for channel {channelId}");
-            return (before, true, 0, 0, preDelayMs);
+            return (pageResult.NewCursor, true, 0, 0, preDelayMs);
         }
-
-        var oldest = msgs.Last().GetProperty("id").GetString();
 
         foreach (var m in msgs)
         {
@@ -441,7 +453,7 @@ public class Program
         }
 
         Console.WriteLine($"Backfilled {msgs.Count} messages from channel {channelId}");
-        return (oldest, false, msgs.Count, 0, preDelayMs);
+        return (pageResult.NewCursor, false, msgs.Count, 0, preDelayMs);
     }
 
     private static async Task InsertMessage(JsonElement msg, string source)

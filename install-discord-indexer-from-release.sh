@@ -77,11 +77,16 @@ sha256sum -c "$ASSET_SHA"
 install -m 0755 "$TMP/discord-indexer" /usr/local/bin/discord-indexer
 install -m 0755 "$TMP/discord-indexer-search" /usr/local/bin/discord-indexer-search
 install -m 0755 "$TMP/discord-indexer-delta" /usr/local/bin/discord-indexer-delta
+installed_migrate=""
+if [[ -f "$TMP/discord-indexer-migrate-attachments" ]]; then
+  install -m 0755 "$TMP/discord-indexer-migrate-attachments" /usr/local/bin/discord-indexer-migrate-attachments
+  installed_migrate=" /usr/local/bin/discord-indexer-migrate-attachments"
+fi
 
 echo "[install] Installed:" \
   "/usr/local/bin/discord-indexer" \
   "/usr/local/bin/discord-indexer-search" \
-  "/usr/local/bin/discord-indexer-delta"
+  "/usr/local/bin/discord-indexer-delta${installed_migrate}"
 
 if [[ "$INSTALL_SYSTEMD" == "1" ]]; then
   echo "[install] Installing/updating systemd service + env file"

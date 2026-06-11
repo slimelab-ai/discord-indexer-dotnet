@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Populate top-level attachment fields from raw Discord payloads already stored in MongoDB.
+#
+# Env (optional):
+#   MONGODB_URI=mongodb://127.0.0.1:27017
+#   MONGODB_DB=discord_index
+#   MONGO_CONTAINER_NAME=discord-indexer-mongo
+
+usage() {
+  cat <<EOF
+Usage: discord-indexer-migrate-attachments
+
+Reads raw.attachments from existing messages and writes:
+  attachments
+  attachment_count
+  has_attachments
+
+Env (optional):
+  MONGODB_URI=mongodb://127.0.0.1:27017
+  MONGODB_DB=discord_index
+  MONGO_CONTAINER_NAME=discord-indexer-mongo
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+MONGODB_URI="${MONGODB_URI:-mongodb://127.0.0.1:27017}"
+MONGODB_DB="${MONGODB_DB:-discord_index}"
+MONGO_CONTAINER_NAME="${MONGO_CONTAINER_NAME:-discord-indexer-mongo}"
+
+JS=$(cat <<'EOF'
+const dbname = __DBNAME__;
+const col = db.getSiblingDB(dbname).getCollection('messages');
+
+const result = col.updateMany(
+  {},
+  [
+    {
+      $set: {
+        attachments: {
+          $map: {
+            input: { $ifNull: ['$raw.attachments', []] },
+            as: 'a',
+            in: {
+              id: { $ifNull: ['$$a.id', null] },
+              filename: { $ifNull: ['$$a.filename', null] },
+              content_type: { $ifNull: ['$$a.content_type', null] },
+              size: { $ifNull: ['$$a.size', null] },
+              width: { $ifNull: ['$$a.width', null] },
+              height: { $ifNull: ['$$a.height', null] },
+              url: { $ifNull: ['$$a.url', null] },
+              proxy_url: { $ifNull: ['$$a.proxy_url', null] },
+              ephemeral: { $ifNull: ['$$a.ephemeral', null] },
+              flags: { $ifNull: ['$$a.flags', null] }
+            }
+          }
+        },
+        attachment_count: { $size: { $ifNull: ['$raw.attachments', []] } },
+        has_attachments: { $gt: [{ $size: { $ifNull: ['$raw.attachments', []] } }, 0] }
+      }
+    }
+  ]
+);
+
+print(JSON.stringify({
+  matched: result.matchedCount,
+  modified: result.modifiedCount
+}));
+EOF
+)
+
+JS="${JS//__DBNAME__/\"$MONGODB_DB\"}"
+
+docker_cmd() {
+  if command -v docker >/dev/null 2>&1; then
+    if docker ps >/dev/null 2>&1; then
+      echo "docker"
+      return
+    fi
+  fi
+  if command -v sudo >/dev/null 2>&1 && sudo -n docker ps >/dev/null 2>&1; then
+    echo "sudo -n docker"
+    return
+  fi
+  echo ""
+}
+
+run_mongosh() {
+  if command -v mongosh >/dev/null 2>&1; then
+    mongosh "$MONGODB_URI" --quiet --eval "$JS"
+    return
+  fi
+
+  DCMD="$(docker_cmd)"
+  if [[ -n "$DCMD" ]]; then
+    if $DCMD ps --format '{{.Names}}' | grep -qx "${MONGO_CONTAINER_NAME}"; then
+      $DCMD exec -i "$MONGO_CONTAINER_NAME" mongosh "$MONGODB_URI" --quiet --eval "$JS"
+      return
+    fi
+  fi
+
+  echo "ERROR: mongosh not found and mongo container '$MONGO_CONTAINER_NAME' not accessible." >&2
+  echo "Install mongosh, or run with sudo, or set MONGO_CONTAINER_NAME to the running container." >&2
+  exit 1
+}
+
+run_mongosh

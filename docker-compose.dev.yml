@@ -1,0 +1,11 @@
+services:
+  mongo:
+    image: mongo:6
+    container_name: discord-indexer-dev-mongo
+    ports:
+      - "127.0.0.1:27019:27017"
+    volumes:
+      - discord_indexer_dev_mongo:/data/db
+
+volumes:
+  discord_indexer_dev_mongo:

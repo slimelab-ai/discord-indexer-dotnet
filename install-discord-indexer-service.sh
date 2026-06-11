@@ -177,6 +177,12 @@ if [[ -f "$DELTA_HELPER_SRC" ]]; then
   sudo install -o root -g root -m 0755 "$DELTA_HELPER_SRC" /usr/local/bin/discord-indexer-delta
 fi
 
+MIGRATE_ATTACHMENTS_SRC="$REPO_DIR/discord-indexer-migrate-attachments"
+if [[ -f "$MIGRATE_ATTACHMENTS_SRC" ]]; then
+  echo "[install] Installing helper -> /usr/local/bin/discord-indexer-migrate-attachments"
+  sudo install -o root -g root -m 0755 "$MIGRATE_ATTACHMENTS_SRC" /usr/local/bin/discord-indexer-migrate-attachments
+fi
+
 # ====== write env file (secrets live here) ======
 echo "[install] Writing env file -> $ENV_FILE"
 tmp_env="$(mktemp)"

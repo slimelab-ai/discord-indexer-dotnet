@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.WebSockets;
 using System.Text;
@@ -398,6 +399,12 @@ public class Program
 
         if (!resp.IsSuccessStatusCode)
         {
+            if (resp.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.NotFound)
+            {
+                Console.WriteLine($"WARN: Backfill cannot read channel {channelId}: {(int)resp.StatusCode} {resp.ReasonPhrase}. Marking done.");
+                return (before, true, 0, 1, _backfillRequestDelayMs);
+            }
+
             Console.WriteLine($"WARN: Backfill fetch failed for channel {channelId}: {(int)resp.StatusCode} {resp.ReasonPhrase}");
             return (before, false, 0, 1, _backfillRequestDelayMs);
         }

@@ -42,8 +42,27 @@ Releases include:
 
 - `discord-indexer-search <text> [--guild ...] [--channel ...] [--limit N]`
 - `discord-indexer-delta --since <timestamp|epoch_ms> [--guild ...] [--channel ...] [--limit N] [--format tsv|jsonl]`
+- `discord-indexer-migrate-attachments`
 
 `discord-indexer-delta` is the server-wide delta retrieval helper: by default it returns indexed messages across all readable channels since the requested timestamp, optionally narrowed to one guild or one channel.
+
+Messages store Discord file attachments in a top-level `attachments` array in MongoDB, alongside `attachment_count` and `has_attachments`. Search and delta helpers return the attachment array with message content so callers do not need to parse `raw.attachments`.
+
+For existing databases created before attachment metadata was promoted, run:
+
+```bash
+discord-indexer-migrate-attachments
+```
+
+## Development Mongo
+
+To avoid touching the live indexer database during development:
+
+```bash
+docker compose -f docker-compose.dev.yml up -d
+export MONGODB_URI=mongodb://127.0.0.1:27019
+export MONGODB_DB=discord_index_dev
+```
 
 ## Notes
 

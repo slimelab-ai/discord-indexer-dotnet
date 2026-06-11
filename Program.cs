@@ -491,6 +491,7 @@ public class Program
             await TouchChannel(channelId!, guildId, tsMs);
         }
 
+        var attachments = ExtractAttachments(msg);
         var doc = new BsonDocument
         {
             { "message_id", id },
@@ -500,6 +501,9 @@ public class Program
             { "timestamp", timestamp == null ? (BsonValue)BsonNull.Value : new BsonString(timestamp) },
             { "timestamp_ms", tsMs },
             { "source", source },
+            { "attachments", attachments },
+            { "attachment_count", attachments.Count },
+            { "has_attachments", attachments.Count > 0 },
             { "raw", BsonDocument.Parse(msg.GetRawText()) },
             { "ingested_at", DateTime.UtcNow },
         };
@@ -510,7 +514,7 @@ public class Program
         }
         catch (MongoWriteException mwx) when (mwx.WriteError.Category == ServerErrorCategory.DuplicateKey)
         {
-            // ignore duplicates
+            await UpdateDuplicateMessageAttachments(id, msg);
         }
 
         // Maintain a small user lookup table for ID -> latest name (helps profiling by user_id)
@@ -533,6 +537,82 @@ public class Program
                 // ignore lookup races/errors
             }
         }
+    }
+
+    internal static BsonArray ExtractAttachments(JsonElement msg)
+    {
+        var attachments = new BsonArray();
+        if (!msg.TryGetProperty("attachments", out var rawAttachments) || rawAttachments.ValueKind != JsonValueKind.Array)
+            return attachments;
+
+        foreach (var attachment in rawAttachments.EnumerateArray())
+        {
+            if (attachment.ValueKind != JsonValueKind.Object)
+                continue;
+
+            var doc = new BsonDocument
+            {
+                { "id", ReadString(attachment, "id") },
+                { "filename", ReadString(attachment, "filename") },
+                { "content_type", ReadString(attachment, "content_type") },
+                { "size", ReadInt64(attachment, "size") },
+                { "width", ReadNullableInt32(attachment, "width") },
+                { "height", ReadNullableInt32(attachment, "height") },
+                { "url", ReadString(attachment, "url") },
+                { "proxy_url", ReadString(attachment, "proxy_url") },
+            };
+
+            if (attachment.TryGetProperty("ephemeral", out var ephemeral) && ephemeral.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                doc.Add("ephemeral", ephemeral.GetBoolean());
+
+            if (attachment.TryGetProperty("flags", out var flags) && flags.TryGetInt32(out var flagValue))
+                doc.Add("flags", flagValue);
+
+            attachments.Add(doc);
+        }
+
+        return attachments;
+    }
+
+    private static async Task UpdateDuplicateMessageAttachments(string messageId, JsonElement msg)
+    {
+        if (_messages == null || string.IsNullOrEmpty(messageId)) return;
+
+        var attachments = ExtractAttachments(msg);
+        var update = Builders<BsonDocument>.Update
+            .Set("attachments", attachments)
+            .Set("attachment_count", attachments.Count)
+            .Set("has_attachments", attachments.Count > 0);
+
+        try
+        {
+            await _messages.UpdateOneAsync(Builders<BsonDocument>.Filter.Eq("message_id", messageId), update);
+        }
+        catch
+        {
+            // ignore duplicate refresh races/errors
+        }
+    }
+
+    private static BsonValue ReadString(JsonElement obj, string name)
+    {
+        return obj.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+            ? new BsonString(value.GetString() ?? "")
+            : BsonNull.Value;
+    }
+
+    private static BsonValue ReadInt64(JsonElement obj, string name)
+    {
+        return obj.TryGetProperty(name, out var value) && value.TryGetInt64(out var parsed)
+            ? new BsonInt64(parsed)
+            : BsonNull.Value;
+    }
+
+    private static BsonValue ReadNullableInt32(JsonElement obj, string name)
+    {
+        return obj.TryGetProperty(name, out var value) && value.TryGetInt32(out var parsed)
+            ? new BsonInt32(parsed)
+            : BsonNull.Value;
     }
 
 

@@ -11,6 +11,7 @@ set -euo pipefail
 #     /usr/local/bin/discord-indexer
 #     /usr/local/bin/discord-indexer-search
 #     /usr/local/bin/discord-indexer-delta
+#     /usr/local/bin/discord-indexer-migrate-attachments
 # - If an OpenClaw config is found, reads channels.discord.token and writes
 #   /etc/discord-indexer/indexer.env (0600) without printing the token.
 
@@ -149,6 +150,9 @@ install -d "$PREFIX"
 install -m 0755 "$TMP/discord-indexer" "$PREFIX/discord-indexer"
 install -m 0755 "$TMP/discord-indexer-search" "$PREFIX/discord-indexer-search"
 install -m 0755 "$TMP/discord-indexer-delta" "$PREFIX/discord-indexer-delta"
+if [[ -f "$TMP/discord-indexer-migrate-attachments" ]]; then
+  install -m 0755 "$TMP/discord-indexer-migrate-attachments" "$PREFIX/discord-indexer-migrate-attachments"
+fi
 
 echo "[install] Installed binaries to $PREFIX"
 

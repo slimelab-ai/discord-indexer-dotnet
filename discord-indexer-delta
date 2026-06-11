@@ -122,6 +122,9 @@ const cursor = msgCol.find(
     channel_id: 1,
     timestamp: 1,
     timestamp_ms: 1,
+    attachments: 1,
+    attachment_count: 1,
+    has_attachments: 1,
     'raw.author.username': 1,
     'raw.author.global_name': 1,
     'raw.content': 1
@@ -131,6 +134,7 @@ const cursor = msgCol.find(
 cursor.forEach(d => {
   const who = (d.raw && d.raw.author) ? (d.raw.author.global_name || d.raw.author.username || '') : '';
   const content = (d.raw && d.raw.content) ? d.raw.content : '';
+  const attachments = Array.isArray(d.attachments) ? d.attachments : [];
   const channel = d.channel_id ? (channelMap[d.channel_id] || null) : null;
   const row = {
     timestamp: d.timestamp || '',
@@ -139,7 +143,10 @@ cursor.forEach(d => {
     channel_id: d.channel_id || '',
     channel_name: channel && channel.name ? channel.name : '',
     author: who,
-    content
+    content,
+    attachments,
+    attachment_count: typeof d.attachment_count === 'number' ? d.attachment_count : attachments.length,
+    has_attachments: d.has_attachments === true || attachments.length > 0
   };
 
   if (format === 'jsonl') {
@@ -151,7 +158,8 @@ cursor.forEach(d => {
       row.channel_id,
       row.channel_name,
       row.author,
-      row.content
+      row.content,
+      JSON.stringify(row.attachments)
     ].join('\t'));
   }
 });

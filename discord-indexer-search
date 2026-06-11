@@ -86,13 +86,14 @@ fi
 JS="const dbname=\"$MONGODB_DB\";
 const col=db.getSiblingDB(dbname).getCollection('messages');
 const q=$FILTER;
-col.find(q,{message_id:1,guild_id:1,channel_id:1,timestamp:1,timestamp_ms:1,'raw.author.username':1,'raw.author.global_name':1,'raw.content':1})
+col.find(q,{message_id:1,guild_id:1,channel_id:1,timestamp:1,timestamp_ms:1,attachments:1,attachment_count:1,has_attachments:1,'raw.author.username':1,'raw.author.global_name':1,'raw.content':1})
   .sort({timestamp_ms:-1})
   .limit($LIMIT)
   .forEach(d => {
     const who=(d.raw && d.raw.author) ? (d.raw.author.global_name || d.raw.author.username || '') : '';
     const content=(d.raw && d.raw.content) ? d.raw.content : '';
-    print([d.timestamp || '', d.guild_id || '', d.channel_id || '', who, content].join('\t'));
+    const attachments=Array.isArray(d.attachments) ? d.attachments : [];
+    print([d.timestamp || '', d.guild_id || '', d.channel_id || '', who, content, JSON.stringify(attachments)].join('\t'));
   });"
 
 docker_cmd() {

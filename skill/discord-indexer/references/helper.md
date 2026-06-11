@@ -25,6 +25,8 @@ Agent note: do not assume there is a sibling Python entrypoint for delta retriev
 - If `mongosh` is installed, they use that directly.
 - Otherwise they can fall back to running `mongosh` inside the configured Mongo container.
 - `discord-indexer-delta` retrieves messages since a timestamp across all indexed/readable channels by default, with optional `--guild` / `--channel` narrowing.
+- Search and delta results include top-level message attachment metadata when present, including Discord attachment URLs.
+- `discord-indexer-migrate-attachments` backfills `attachments`, `attachment_count`, and `has_attachments` from existing `raw.attachments` payloads.
 - Results are intended for quick operator lookup, not polished end-user formatting.
 
 ## Good response pattern

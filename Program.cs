@@ -13,6 +13,8 @@ namespace DiscordIndexer;
 public class Program
 {
     internal static readonly HttpClient Http = new();
+    private const int MessageContentIntent = 32768;
+    private const int DefaultGatewayIntents = 37377; // GUILDS + GUILD_MESSAGES + DIRECT_MESSAGES + MESSAGE_CONTENT
 
     // Discord rate-limit coordination (header-driven). Key goal: avoid 429s by serializing per bucket.
     private static readonly DiscordRateLimiter RateLimiter = new();
@@ -42,9 +44,15 @@ public class Program
         // - GUILDS (1)
         // - GUILD_MESSAGES (512)
         // - DIRECT_MESSAGES (4096)
-        // NOTE: MESSAGE_CONTENT (32768) is privileged and must be enabled in the Discord Developer Portal.
-        // We do NOT enable it by default.
-        var intents = int.Parse(GetEnv("DISCORD_INTENTS", "4609"));
+        // - MESSAGE_CONTENT (32768)
+        // NOTE: MESSAGE_CONTENT is privileged and must be enabled in the Discord Developer Portal.
+        // Discord gates message content, embeds, attachments, and components together for many
+        // gateway events; without it, image-only messages can index as blank messages with [] attachments.
+        var intents = int.Parse(GetEnv("DISCORD_INTENTS", DefaultGatewayIntents.ToString()));
+        if ((intents & MessageContentIntent) == 0)
+        {
+            Console.WriteLine("WARNING: DISCORD_INTENTS is missing MESSAGE_CONTENT (32768). Discord may omit content, embeds, attachments, and components from gateway events.");
+        }
 
         var mongoUri = GetEnv("MONGODB_URI", "mongodb://localhost:27017");
         var mongoDbName = GetEnv("MONGODB_DB", "discord_index");

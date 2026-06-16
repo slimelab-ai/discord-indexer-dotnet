@@ -15,7 +15,7 @@ set -euo pipefail
 # - If an OpenClaw config is found, reads channels.discord.token and writes
 #   /etc/discord-indexer/indexer.env (0600) without printing the token.
 
-REPO="${REPO:-patrick-slimelab/discord-indexer-dotnet}"
+REPO="${REPO:-slimelab-ai/discord-indexer-dotnet}"
 VERSION="${VERSION:-latest}" # latest or vX.Y.Z
 PREFIX="${PREFIX:-/usr/local/bin}"
 
@@ -314,7 +314,9 @@ if [[ ! -f "$ENV_FILE" ]]; then
     echo "MONGODB_URI=\"mongodb://127.0.0.1:27017\""
     echo "MONGODB_DB=\"discord_index\""
     echo "DISCORD_GUILD_IDS=\"\""
-    echo "DISCORD_INTENTS=\"4609\""
+    echo "# 37377 = GUILDS + GUILD_MESSAGES + DIRECT_MESSAGES + MESSAGE_CONTENT."
+    echo "# MESSAGE_CONTENT is required for reliable content/embed/attachment indexing."
+    echo "DISCORD_INTENTS=\"37377\""
     echo "INDEXER_BACKFILL_WORKERS=\"1\""
     echo "INDEXER_BACKFILL_REQUEST_DELAY_MS=\"250\""
     if [[ -n "$TOKEN" ]]; then

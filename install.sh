@@ -37,33 +37,7 @@ need curl
 need tar
 need sha256sum
 
-normalize_discord_intents() {
-  local raw="${1:-37377}"
-  local parsed
-  if [[ "$raw" =~ ^[0-9]+$ ]]; then
-    parsed="$raw"
-  else
-    parsed=37377
-  fi
-
-  # Ensure MESSAGE_CONTENT (32768) is present while preserving any extra custom intent bits.
-  echo $(( parsed | 32768 ))
-}
-
-read_env_value() {
-  local key="$1"
-  local file="$2"
-  awk -F= -v key="$key" '
-    $1 == key {
-      value = substr($0, index($0, "=") + 1)
-      gsub(/^[ \t]+|[ \t]+$/, "", value)
-      gsub(/^"|"$/, "", value)
-      gsub(/^'\''|'\''$/, "", value)
-      print value
-      exit
-    }
-  ' "$file"
-}
+REQUIRED_DISCORD_INTENTS="37377"
 
 upsert_env_line() {
   local file="$1"
@@ -385,10 +359,8 @@ if [[ ! -f "$ENV_FILE" ]]; then
   chmod 600 "$ENV_FILE"
   echo "[install] Wrote $ENV_FILE (0600)"
 else
-  existing_intents="$(read_env_value DISCORD_INTENTS "$ENV_FILE" || true)"
-  normalized_intents="$(normalize_discord_intents "$existing_intents")"
-  echo "[install] Updating existing $ENV_FILE with DISCORD_INTENTS=\"$normalized_intents\""
-  upsert_env_line "$ENV_FILE" DISCORD_INTENTS "DISCORD_INTENTS=\"$normalized_intents\""
+  echo "[install] Updating existing $ENV_FILE with required DISCORD_INTENTS=\"$REQUIRED_DISCORD_INTENTS\""
+  upsert_env_line "$ENV_FILE" DISCORD_INTENTS "DISCORD_INTENTS=\"$REQUIRED_DISCORD_INTENTS\""
 
   if [[ -n "$TOKEN" ]]; then
     if grep -q '^DISCORD_BOT_TOKEN=' "$ENV_FILE"; then

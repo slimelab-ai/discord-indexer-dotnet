@@ -37,10 +37,11 @@ BIN_SRC="${BIN_SRC:-}"
 # ====== REQUIRED SETTINGS (export before running) ======
 DISCORD_BOT_TOKEN="${DISCORD_BOT_TOKEN:-}"
 DISCORD_GUILD_IDS="${DISCORD_GUILD_IDS:-}"     # optional; if empty, indexer will attempt auto-discovery
-# Gateway intents. Default includes DMs (DIRECT_MESSAGES=4096) and MESSAGE_CONTENT (32768).
+# Gateway intents. Includes GUILDS (1), GUILD_MESSAGES (512), DIRECT_MESSAGES (4096),
+# and MESSAGE_CONTENT (32768).
 # MESSAGE_CONTENT must be enabled in the Discord Developer Portal; Discord gates message content,
 # embeds, attachments, and components together for many gateway events.
-DISCORD_INTENTS="${DISCORD_INTENTS:-37377}"
+REQUIRED_DISCORD_INTENTS="37377"
 
 # By default the installer will provision a dedicated mongo:6 container and bind it to 127.0.0.1:$MONGO_PORT.
 # You can disable with INSTALL_MONGO=0 or point at an external Mongo by setting MONGODB_URI explicitly.
@@ -55,21 +56,7 @@ MONGODB_DB="${MONGODB_DB:-discord_index}"
 # Optional CLI flags (if/when your indexer supports them)
 INDEXER_OPTS="${INDEXER_OPTS:-}"
 
-normalize_discord_intents() {
-  local raw="${1:-37377}"
-  local parsed
-  if [[ "$raw" =~ ^[0-9]+$ ]]; then
-    parsed="$raw"
-  else
-    echo "WARN: invalid DISCORD_INTENTS='$raw'; using 37377" >&2
-    parsed=37377
-  fi
-
-  # Ensure MESSAGE_CONTENT (32768) is present while preserving any extra custom intent bits.
-  echo $(( parsed | 32768 ))
-}
-
-DISCORD_INTENTS="$(normalize_discord_intents "$DISCORD_INTENTS")"
+DISCORD_INTENTS="$REQUIRED_DISCORD_INTENTS"
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1

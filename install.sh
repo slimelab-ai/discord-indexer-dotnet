@@ -37,6 +37,61 @@ need curl
 need tar
 need sha256sum
 
+normalize_discord_intents() {
+  local raw="${1:-37377}"
+  local parsed
+  if [[ "$raw" =~ ^[0-9]+$ ]]; then
+    parsed="$raw"
+  else
+    parsed=37377
+  fi
+
+  # Ensure MESSAGE_CONTENT (32768) is present while preserving any extra custom intent bits.
+  echo $(( parsed | 32768 ))
+}
+
+read_env_value() {
+  local key="$1"
+  local file="$2"
+  awk -F= -v key="$key" '
+    $1 == key {
+      value = substr($0, index($0, "=") + 1)
+      gsub(/^[ \t]+|[ \t]+$/, "", value)
+      gsub(/^"|"$/, "", value)
+      gsub(/^'\''|'\''$/, "", value)
+      print value
+      exit
+    }
+  ' "$file"
+}
+
+upsert_env_line() {
+  local file="$1"
+  local key="$2"
+  local line="$3"
+  local tmpfile
+  tmpfile="$(mktemp)"
+  awk -v key="$key" -v repl="$line" '
+    BEGIN { done = 0 }
+    $0 ~ ("^" key "=") {
+      if (!done) {
+        print repl
+        done = 1
+      }
+      next
+    }
+    { print }
+    END {
+      if (!done) {
+        print repl
+      }
+    }
+  ' "$file" > "$tmpfile"
+  cat "$tmpfile" > "$file"
+  rm -f "$tmpfile"
+  chmod 600 "$file"
+}
+
 
 # Ensure we can query the DB locally (used by discord-indexer-search / discord-indexer-delta)
 install_mongosh_if_possible() {
@@ -330,22 +385,22 @@ if [[ ! -f "$ENV_FILE" ]]; then
   chmod 600 "$ENV_FILE"
   echo "[install] Wrote $ENV_FILE (0600)"
 else
+  existing_intents="$(read_env_value DISCORD_INTENTS "$ENV_FILE" || true)"
+  normalized_intents="$(normalize_discord_intents "$existing_intents")"
+  echo "[install] Updating existing $ENV_FILE with DISCORD_INTENTS=\"$normalized_intents\""
+  upsert_env_line "$ENV_FILE" DISCORD_INTENTS "DISCORD_INTENTS=\"$normalized_intents\""
+
   if [[ -n "$TOKEN" ]]; then
     if grep -q '^DISCORD_BOT_TOKEN=' "$ENV_FILE"; then
       echo "[install] Updating existing $ENV_FILE with detected DISCORD_BOT_TOKEN (no token printed)"
-      # Replace the first matching line safely
-      tmpfile="$(mktemp)"
-      awk -v repl="DISCORD_BOT_TOKEN=\"$TOKEN\"" 'BEGIN{done=0} {if(!done && $0 ~ /^DISCORD_BOT_TOKEN=/){print repl; done=1} else {print}} END{if(!done){print repl}}' "$ENV_FILE" > "$tmpfile"
-      cat "$tmpfile" > "$ENV_FILE"
-      rm -f "$tmpfile"
-      chmod 600 "$ENV_FILE"
+      upsert_env_line "$ENV_FILE" DISCORD_BOT_TOKEN "DISCORD_BOT_TOKEN=\"$TOKEN\""
     else
       echo "[install] Adding DISCORD_BOT_TOKEN to existing $ENV_FILE (no token printed)"
       printf '\nDISCORD_BOT_TOKEN="%s"\n# token source: OpenClaw/Clawdbot config (channels.discord.token)\n' "$TOKEN" >> "$ENV_FILE"
       chmod 600 "$ENV_FILE"
     fi
   else
-    echo "[install] $ENV_FILE already exists; leaving it unchanged"
+    echo "[install] $ENV_FILE already exists; preserving token and host-specific values"
   fi
 fi
 

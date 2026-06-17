@@ -55,6 +55,22 @@ MONGODB_DB="${MONGODB_DB:-discord_index}"
 # Optional CLI flags (if/when your indexer supports them)
 INDEXER_OPTS="${INDEXER_OPTS:-}"
 
+normalize_discord_intents() {
+  local raw="${1:-37377}"
+  local parsed
+  if [[ "$raw" =~ ^[0-9]+$ ]]; then
+    parsed="$raw"
+  else
+    echo "WARN: invalid DISCORD_INTENTS='$raw'; using 37377" >&2
+    parsed=37377
+  fi
+
+  # Ensure MESSAGE_CONTENT (32768) is present while preserving any extra custom intent bits.
+  echo $(( parsed | 32768 ))
+}
+
+DISCORD_INTENTS="$(normalize_discord_intents "$DISCORD_INTENTS")"
+
 need_cmd() {
   command -v "$1" >/dev/null 2>&1
 }

@@ -26,6 +26,11 @@ public class Program
 
     // In-memory channel cache: channel_id -> (guild_id, last_seen_ms)
     private static readonly ConcurrentDictionary<string, (string? guildId, long lastSeenMs)> ChannelCache = new();
+    private static readonly ConcurrentDictionary<string, CancellationTokenSource> PendingMessageUpdates = new();
+    private static TimeSpan _messageUpdateDebounce = TimeSpan.FromSeconds(10);
+    private static int _startupReconcileLimit = 100;
+    private static TimeSpan _startupReconcileWindow = TimeSpan.FromMinutes(15);
+    private static string _apiBase = "https://discord.com/api/v10";
 
     private static int _backfillPageSize = 100; // Discord max
     private static int _backfillWorkers = 2;
@@ -38,6 +43,7 @@ public class Program
 
         var token = GetEnv("DISCORD_BOT_TOKEN");
         var apiBase = GetEnv("DISCORD_API_BASE", "https://discord.com/api/v10").TrimEnd('/');
+        _apiBase = apiBase;
         var gatewayUrl = GetEnv("DISCORD_GATEWAY_URL", "wss://gateway.discord.gg/?v=10&encoding=json");
         var guildIdsCsv = GetEnv("DISCORD_GUILD_IDS", "");
         // Default intents:
@@ -62,6 +68,9 @@ public class Program
         _backfillRequestDelayMs = int.Parse(GetEnv("INDEXER_BACKFILL_REQUEST_DELAY_MS", _backfillRequestDelayMs.ToString()));
         var claimTimeoutMs = int.Parse(GetEnv("INDEXER_BACKFILL_CLAIM_TIMEOUT_MS", ((int)BackfillState.DefaultClaimTimeout.TotalMilliseconds).ToString()));
         _backfillClaimTimeout = TimeSpan.FromMilliseconds(Math.Max(1000, claimTimeoutMs));
+        _messageUpdateDebounce = TimeSpan.FromMilliseconds(Math.Max(100, int.Parse(GetEnv("INDEXER_MESSAGE_UPDATE_DEBOUNCE_MS", "10000"))));
+        _startupReconcileLimit = Math.Clamp(int.Parse(GetEnv("INDEXER_STARTUP_RECONCILE_LIMIT", "100")), 0, 1000);
+        _startupReconcileWindow = TimeSpan.FromMinutes(Math.Max(1, int.Parse(GetEnv("INDEXER_STARTUP_RECONCILE_WINDOW_MINUTES", "15"))));
 
         if (_backfillPageSize is < 1 or > 100) _backfillPageSize = 100;
 
@@ -78,6 +87,8 @@ public class Program
 
         // HTTP auth
         Http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bot", token);
+
+        await ReconcileRecentBotMessages();
 
         // Seed channels for backfill
         var guildIds = guildIdsCsv
@@ -554,6 +565,118 @@ public class Program
         }
     }
 
+    private static void QueueMessageUpdate(JsonElement msg)
+    {
+        if (!msg.TryGetProperty("id", out var idElement)) return;
+        var messageId = idElement.GetString();
+        if (string.IsNullOrEmpty(messageId)) return;
+        var channelId = msg.TryGetProperty("channel_id", out var channelIdElement)
+            ? channelIdElement.GetString()
+            : null;
+
+        var replacement = new CancellationTokenSource();
+        PendingMessageUpdates.AddOrUpdate(messageId!, replacement, (_, previous) =>
+        {
+            previous.Cancel();
+            previous.Dispose();
+            return replacement;
+        });
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(_messageUpdateDebounce, replacement.Token);
+                if (!PendingMessageUpdates.TryGetValue(messageId!, out var current) || current != replacement) return;
+                await RefreshMessageFromDiscord(messageId!, channelId);
+                PendingMessageUpdates.TryRemove(new KeyValuePair<string, CancellationTokenSource>(messageId!, replacement));
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"WARN: Failed to settle message update {messageId}: {ex.Message}");
+                PendingMessageUpdates.TryRemove(new KeyValuePair<string, CancellationTokenSource>(messageId!, replacement));
+            }
+            finally
+            {
+                replacement.Dispose();
+            }
+        });
+    }
+
+    private static async Task RefreshMessageFromDiscord(string messageId, string? channelId)
+    {
+        if (_messages == null || string.IsNullOrEmpty(channelId)) return;
+        var url = $"{_apiBase}/channels/{channelId}/messages/{messageId}";
+        using var response = await RateLimiter.GetAsync(url, routeKey: "GET:/channels/:channelId/messages/:messageId");
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            await DeleteMessage(messageId);
+            return;
+        }
+        if (!response.IsSuccessStatusCode)
+            throw new HttpRequestException($"Discord returned {(int)response.StatusCode} {response.ReasonPhrase}");
+
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        await UpdateMessage(document.RootElement);
+    }
+
+    private static async Task UpdateMessage(JsonElement msg)
+    {
+        if (_messages == null) return;
+        var messageId = msg.GetProperty("id").GetString();
+        if (string.IsNullOrEmpty(messageId)) return;
+        var attachments = ExtractAttachments(msg);
+        var update = Builders<BsonDocument>.Update
+            .Set("raw", BsonDocument.Parse(msg.GetRawText()))
+            .Set("attachments", attachments)
+            .Set("attachment_count", attachments.Count)
+            .Set("has_attachments", attachments.Count > 0)
+            .Set("edited_at", DateTime.UtcNow);
+        await _messages.UpdateOneAsync(Builders<BsonDocument>.Filter.Eq("message_id", messageId), update);
+    }
+
+    private static async Task DeleteMessage(string messageId)
+    {
+        if (PendingMessageUpdates.TryRemove(messageId, out var pending))
+        {
+            pending.Cancel();
+            pending.Dispose();
+        }
+        if (_messages != null)
+            await _messages.DeleteOneAsync(Builders<BsonDocument>.Filter.Eq("message_id", messageId));
+    }
+
+    private static async Task ReconcileRecentBotMessages()
+    {
+        if (_messages == null || _startupReconcileLimit == 0) return;
+        try
+        {
+            var cutoff = DateTimeOffset.UtcNow.Subtract(_startupReconcileWindow).ToUnixTimeMilliseconds();
+            var filter = Builders<BsonDocument>.Filter.Eq("raw.author.bot", true) &
+                         Builders<BsonDocument>.Filter.Gte("timestamp_ms", cutoff);
+            var candidates = await _messages.Find(filter)
+                .Sort(Builders<BsonDocument>.Sort.Descending("timestamp_ms"))
+                .Limit(_startupReconcileLimit)
+                .Project(Builders<BsonDocument>.Projection.Include("message_id").Include("channel_id"))
+                .ToListAsync();
+
+            foreach (var candidate in candidates)
+            {
+                if (!candidate.TryGetValue("message_id", out var mid) || !mid.IsString ||
+                    !candidate.TryGetValue("channel_id", out var cid) || !cid.IsString) continue;
+                try { await RefreshMessageFromDiscord(mid.AsString, cid.AsString); }
+                catch (Exception ex) { Console.WriteLine($"WARN: Startup reconciliation failed for {mid.AsString}: {ex.Message}"); }
+            }
+            if (candidates.Count > 0)
+                Console.WriteLine($"Startup reconciliation checked {candidates.Count} recent bot messages.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"WARN: Startup reconciliation skipped: {ex.Message}");
+        }
+    }
+
     internal static BsonArray ExtractAttachments(JsonElement msg)
     {
         var attachments = new BsonArray();
@@ -793,6 +916,15 @@ public class Program
                 if (t == "MESSAGE_CREATE")
                 {
                     await InsertMessage(d, source: "live");
+                }
+                else if (t == "MESSAGE_UPDATE")
+                {
+                    QueueMessageUpdate(d);
+                }
+                else if (t == "MESSAGE_DELETE" && d.TryGetProperty("id", out var deletedId))
+                {
+                    var messageId = deletedId.GetString();
+                    if (!string.IsNullOrEmpty(messageId)) await DeleteMessage(messageId!);
                 }
             }
             else if (op == 7 || op == 9)

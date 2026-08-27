@@ -64,6 +64,20 @@ export MONGODB_URI=mongodb://127.0.0.1:27019
 export MONGODB_DB=discord_index_dev
 ```
 
+## Streaming message updates
+
+Live `MESSAGE_UPDATE` events are coalesced per message and written only after the
+message has been quiet for 10 seconds. The settled message is fetched once from
+Discord before MongoDB is updated. `MESSAGE_DELETE` removes the indexed message,
+including abandoned streaming previews.
+
+At startup, one bounded recovery pass refreshes up to 100 bot messages from the
+last 15 minutes. These limits can be tuned with:
+
+- `INDEXER_MESSAGE_UPDATE_DEBOUNCE_MS`
+- `INDEXER_STARTUP_RECONCILE_LIMIT` (set to `0` to disable)
+- `INDEXER_STARTUP_RECONCILE_WINDOW_MINUTES`
+
 ## Notes
 
 - The installer does **not** print tokens.

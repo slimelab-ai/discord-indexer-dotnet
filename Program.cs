@@ -88,7 +88,9 @@ public class Program
         // HTTP auth
         Http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bot", token);
 
-        await ReconcileRecentBotMessages();
+        // Recovery is startup-only, but must not delay gateway ingestion while the
+        // bounded REST pass works through Discord's rate limits.
+        _ = Task.Run(ReconcileRecentBotMessages);
 
         // Seed channels for backfill
         var guildIds = guildIdsCsv

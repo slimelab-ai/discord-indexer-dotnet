@@ -11,8 +11,11 @@ permissions:
 
 jobs:
   test:
-    name: Build and test
-    runs-on: ubuntu-latest
+    name: Build and test (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout
@@ -34,3 +37,13 @@ jobs:
 
       - name: Test
         run: dotnet test discord-indexer.sln --configuration Release --no-build --logger trx --collect:"XPlat Code Coverage"
+
+      - name: Validate Windows scripts offline
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/WindowsScripts.Tests.ps1
+
+      - name: Publish Windows portable package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./publish-windows.ps1

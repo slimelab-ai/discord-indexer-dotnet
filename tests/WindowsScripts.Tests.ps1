@@ -20,6 +20,7 @@ function mongosh {
     $global:LASTEXITCODE = 0
 }
 $originalDatabase = $env:MONGODB_DB
+$originalExitCode = $global:LASTEXITCODE
 try {
     $env:MONGODB_DB = 'offline-quoted-"-database'
     $hostileText = 'quote"; db.dropDatabase(); //\line' + "`n" + 'next line'
@@ -47,6 +48,8 @@ try {
     Write-Host 'Windows script parsing, parameter escaping, query cleanup and failure propagation passed.'
 } finally {
     $env:MONGODB_DB = $originalDatabase
+    # The mock's deliberate failure must not leak into GitHub Actions' pwsh wrapper.
+    $global:LASTEXITCODE = $originalExitCode
     Remove-Item Function:mongosh -ErrorAction SilentlyContinue
     Remove-Variable indexerTestQueries, indexerTestTemporaryFiles -Scope Global -ErrorAction SilentlyContinue
 }

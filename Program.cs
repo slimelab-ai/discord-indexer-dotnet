@@ -36,6 +36,7 @@ public class Program
     private static int _backfillWorkers = 2;
     private static int _backfillRequestDelayMs = 500;
     private static TimeSpan _backfillClaimTimeout = BackfillState.DefaultClaimTimeout;
+    private static TimeSpan _threadDiscoveryInterval = TimeSpan.FromMinutes(15);
 
     public static async Task Main(string[] args)
     {
@@ -71,6 +72,7 @@ public class Program
         _messageUpdateDebounce = TimeSpan.FromMilliseconds(Math.Max(100, int.Parse(GetEnv("INDEXER_MESSAGE_UPDATE_DEBOUNCE_MS", "10000"))));
         _startupReconcileLimit = Math.Clamp(int.Parse(GetEnv("INDEXER_STARTUP_RECONCILE_LIMIT", "100")), 0, 1000);
         _startupReconcileWindow = TimeSpan.FromMinutes(Math.Max(1, int.Parse(GetEnv("INDEXER_STARTUP_RECONCILE_WINDOW_MINUTES", "15"))));
+        _threadDiscoveryInterval = TimeSpan.FromMinutes(Math.Max(1, int.Parse(GetEnv("INDEXER_THREAD_DISCOVERY_INTERVAL_MINUTES", "15"))));
 
         if (_backfillPageSize is < 1 or > 100) _backfillPageSize = 100;
 
@@ -112,16 +114,24 @@ public class Program
 
         if (guildIds.Length > 0)
         {
-            foreach (var gid in guildIds)
-            {
-                await SeedGuildChannels(apiBase, gid);
-            }
-
             Console.WriteLine($"Starting backfill workers: {_backfillWorkers} (pageSize={_backfillPageSize})");
             for (var i = 0; i < _backfillWorkers; i++)
             {
                 _ = Task.Run(() => BackfillWorkerLoop(apiBase));
             }
+            // Archived enumeration can span many pages; never hold up the gateway.
+            _ = Task.Run(async () =>
+            {
+                while (true)
+                {
+                    foreach (var gid in guildIds)
+                    {
+                        try { await SeedGuildChannels(apiBase, gid); }
+                        catch (Exception ex) { Console.WriteLine($"WARN: Discovery failed for guild {gid}: {ex.Message}"); }
+                    }
+                    await Task.Delay(_threadDiscoveryInterval);
+                }
+            });
         }
 
         // Live gateway ingestion
@@ -240,7 +250,7 @@ public class Program
 
         Console.WriteLine($"Fetching channels for guild {guildId}...");
         var url = $"{apiBase}/guilds/{guildId}/channels";
-        var resp = await RateLimiter.GetAsync(url, routeKey: "GET:/guilds/:guildId/channels");
+        using var resp = await RateLimiter.GetAsync(url, routeKey: "GET:/guilds/:guildId/channels");
         if (!resp.IsSuccessStatusCode)
         {
             Console.WriteLine($"WARN: Failed to list channels for guild {guildId}: {(int)resp.StatusCode} {resp.ReasonPhrase}");
@@ -248,14 +258,14 @@ public class Program
         }
 
         var json = await resp.Content.ReadAsStringAsync();
-        var arr = JsonDocument.Parse(json).RootElement;
+        using var channelsDocument = JsonDocument.Parse(json);
+        var arr = channelsDocument.RootElement;
         if (arr.ValueKind != JsonValueKind.Array) return;
 
         foreach (var ch in arr.EnumerateArray())
         {
             var type = ch.GetProperty("type").GetInt32();
-            // 0 = GUILD_TEXT, 5 = GUILD_ANNOUNCEMENT
-            if (type != 0 && type != 5) continue;
+            if (!ThreadDiscovery.IsThreadParent(type)) continue;
 
             var channelId = ch.GetProperty("id").GetString();
             if (string.IsNullOrEmpty(channelId)) continue;
@@ -264,17 +274,44 @@ public class Program
             // This also helps fill guild_id when Discord message payloads omit it.
             await UpsertChannelFromGuildList(ch, guildId);
 
-            await SeedBackfillChannel(channelId!, guildId);
+            // Forum/media messages live in child threads, not the parent channel.
+            if (type is 0 or 5) await SeedBackfillChannel(channelId!, guildId);
         }
+        var discovery = new ThreadDiscovery(RateLimiter.GetAsync, SeedThread, Console.WriteLine);
+        await discovery.DiscoverGuild(apiBase, guildId, arr.EnumerateArray().ToArray());
     }
 
-    private static async Task SeedBackfillChannel(string channelId, string guildId)
+    private static async Task SeedThread(JsonElement thread, string guildId)
+    {
+        await UpsertChannelFromGuildList(thread, guildId);
+        var id = thread.GetProperty("id").GetString();
+        if (id != null) await SeedBackfillChannel(id, guildId,
+            thread.TryGetProperty("last_message_id", out var last) && last.ValueKind == JsonValueKind.String ? last.GetString() : null);
+    }
+
+    private static async Task SeedBackfillChannel(string channelId, string guildId, string? threadHead = null)
     {
         if (_backfill == null) return;
 
         var filter = Builders<BsonDocument>.Filter.Eq("channel_id", channelId);
         var existing = await _backfill.Find(filter).FirstOrDefaultAsync();
-        if (existing != null) return;
+        if (existing != null)
+        {
+            // Preserve unfinished cursors across repeated discovery and crashes. A completed
+            // thread with a changed head gets a bounded catch-up pass from newest to prior head.
+            if (ThreadBackfillState.NeedsCatchup(existing, threadHead))
+            {
+                var priorHead = existing.GetValue("head_message_id", BsonNull.Value);
+                var update = Builders<BsonDocument>.Update.Set("done", false).Set("claimed", false)
+                    .Set("cursor_before", BsonNull.Value).Set("stop_at_message_id", priorHead)
+                    .Set("head_message_id", threadHead).Set("access_blocked", false).Set("updated_at", DateTime.UtcNow);
+                // A forbidden first attempt never indexed the old head, so retry full history.
+                if (existing.GetValue("access_blocked", false).AsBoolean)
+                    update = update.Set("stop_at_message_id", BsonNull.Value);
+                await _backfill.UpdateOneAsync(filter & Builders<BsonDocument>.Filter.Eq("done", true), update);
+            }
+            return;
+        }
 
         var doc = new BsonDocument
         {
@@ -286,6 +323,7 @@ public class Program
             { "created_at", DateTime.UtcNow },
             { "updated_at", DateTime.UtcNow },
             { "error_count", 0 },
+            { "head_message_id", threadHead == null ? (BsonValue)BsonNull.Value : new BsonString(threadHead) },
         };
 
         try
@@ -293,7 +331,7 @@ public class Program
             await _backfill.InsertOneAsync(doc);
             Console.WriteLine($"Seeded backfill for channel {channelId}");
         }
-        catch
+        catch (MongoWriteException ex) when (ex.WriteError.Category == ServerErrorCategory.DuplicateKey)
         {
             // ignore races
         }
@@ -319,7 +357,9 @@ public class Program
                     ? claim["cursor_before"].AsString
                     : null;
 
-                var (newCursor, done, count, errorDelta, retryAfterMs) = await BackfillOnePage(apiBase, channelId, cursor);
+                var stopAt = claim.GetValue("stop_at_message_id", BsonNull.Value);
+                var (newCursor, done, count, errorDelta, retryAfterMs) = await BackfillOnePage(apiBase, channelId, cursor,
+                    stopAt.IsString ? stopAt.AsString : null);
 
                 await UpdateChannelState(channelId, newCursor, done, errorDelta);
 
@@ -375,6 +415,7 @@ public class Program
             .Set<BsonValue>("cursor_before", cursorVal)
             .Set("done", done)
             .Set("claimed", false)
+            .Set("access_blocked", done && errorDelta > 0)
             .Set("updated_at", DateTime.UtcNow);
 
         if (errorDelta > 0)
@@ -383,13 +424,13 @@ public class Program
         await _backfill.UpdateOneAsync(filter, upd);
     }
 
-    private static async Task<(string? newCursor, bool done, int count, int errorDelta, int retryAfterMs)> BackfillOnePage(string apiBase, string channelId, string? before)
+    private static async Task<(string? newCursor, bool done, int count, int errorDelta, int retryAfterMs)> BackfillOnePage(string apiBase, string channelId, string? before, string? stopAt = null)
     {
         var url = $"{apiBase}/channels/{channelId}/messages?limit={_backfillPageSize}";
         if (!string.IsNullOrEmpty(before))
             url += $"&before={before}";
 
-        var resp = await RateLimiter.GetAsync(url, routeKey: "GET:/channels/:channelId/messages");
+        using var resp = await RateLimiter.GetAsync(url, routeKey: "GET:/channels/:channelId/messages");
 
         // Rate limiting
         if ((int)resp.StatusCode == 429)
@@ -457,7 +498,8 @@ public class Program
         }
 
         var json = await resp.Content.ReadAsStringAsync();
-        var root = JsonDocument.Parse(json).RootElement;
+        using var messagesDocument = JsonDocument.Parse(json);
+        var root = messagesDocument.RootElement;
         if (root.ValueKind != JsonValueKind.Array)
             return (before, false, 0, 1, preDelayMs);
 
@@ -467,9 +509,9 @@ public class Program
             .Where(id => !string.IsNullOrEmpty(id))
             .Select(id => id!)
             .ToArray();
-        var pageResult = BackfillState.ApplyFetchedPage(before, messageIds);
+        var pageResult = ThreadBackfillState.ApplyPage(before, messageIds, stopAt);
 
-        if (pageResult.Done)
+        if (msgs.Count == 0)
         {
             Console.WriteLine($"Backfill done for channel {channelId}");
             return (pageResult.NewCursor, true, 0, 0, preDelayMs);
@@ -477,11 +519,12 @@ public class Program
 
         foreach (var m in msgs)
         {
+            if (stopAt != null && !ThreadBackfillState.IsAfter(m.GetProperty("id").GetString()!, stopAt)) continue;
             await InsertMessage(m, source: "backfill");
         }
 
         Console.WriteLine($"Backfilled {msgs.Count} messages from channel {channelId}");
-        return (pageResult.NewCursor, false, msgs.Count, 0, preDelayMs);
+        return (pageResult.NewCursor, pageResult.Done, msgs.Count, 0, preDelayMs);
     }
 
     private static async Task InsertMessage(JsonElement msg, string source)
@@ -542,7 +585,7 @@ public class Program
         }
         catch (MongoWriteException mwx) when (mwx.WriteError.Category == ServerErrorCategory.DuplicateKey)
         {
-            await UpdateDuplicateMessageAttachments(id, msg);
+            await RefreshDuplicateMessage(id, msg);
         }
 
         // Maintain a small user lookup table for ID -> latest name (helps profiling by user_id)
@@ -714,24 +757,19 @@ public class Program
         return attachments;
     }
 
-    private static async Task UpdateDuplicateMessageAttachments(string messageId, JsonElement msg)
+    private static async Task RefreshDuplicateMessage(string messageId, JsonElement msg)
     {
         if (_messages == null || string.IsNullOrEmpty(messageId)) return;
 
         var attachments = ExtractAttachments(msg);
         var update = Builders<BsonDocument>.Update
+            .Set("raw", BsonDocument.Parse(msg.GetRawText()))
             .Set("attachments", attachments)
             .Set("attachment_count", attachments.Count)
             .Set("has_attachments", attachments.Count > 0);
 
-        try
-        {
-            await _messages.UpdateOneAsync(Builders<BsonDocument>.Filter.Eq("message_id", messageId), update);
-        }
-        catch
-        {
-            // ignore duplicate refresh races/errors
-        }
+        // Let persistence failures keep the backfill cursor on this page for retry.
+        await _messages.UpdateOneAsync(MessageRevision.RefreshFilter(messageId, msg), update);
     }
 
     private static BsonValue ReadString(JsonElement obj, string name)
@@ -782,6 +820,8 @@ public class Program
             .Set("nsfw", nsfw == null ? (BsonValue)BsonNull.Value : new BsonBoolean(nsfw.Value))
             .Max("last_seen_ms", nowMs)
             .Set("updated_at", DateTime.UtcNow);
+        if (ch.TryGetProperty("thread_metadata", out var threadMetadata))
+            u = u.Set("thread_metadata", BsonDocument.Parse(threadMetadata.GetRawText()));
 
         try
         {
@@ -918,6 +958,17 @@ public class Program
                 if (t == "MESSAGE_CREATE")
                 {
                     await InsertMessage(d, source: "live");
+                }
+                else if (t is "THREAD_CREATE" or "THREAD_UPDATE")
+                {
+                    if (d.TryGetProperty("guild_id", out var guild) && guild.GetString() is { } gid)
+                        await SeedThread(d, gid);
+                }
+                else if (t == "THREAD_LIST_SYNC")
+                {
+                    if (d.TryGetProperty("guild_id", out var guild) && guild.GetString() is { } gid &&
+                        d.TryGetProperty("threads", out var threads))
+                        foreach (var thread in threads.EnumerateArray()) await SeedThread(thread, gid);
                 }
                 else if (t == "MESSAGE_UPDATE")
                 {

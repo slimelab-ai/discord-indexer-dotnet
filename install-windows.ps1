@@ -15,7 +15,7 @@ $destination = [IO.Path]::GetFullPath($InstallDirectory)
 if ($source.TrimEnd('\', '/') -ieq $destination.TrimEnd('\', '/')) { throw 'InstallDirectory must differ from the source package directory.' }
 New-Item -ItemType Directory -Path $destination -Force | Out-Null
 # Copy only packaged program files; never import configuration, tokens or databases.
-foreach ($name in @('discord-indexer.exe', 'discord-indexer-search.ps1', 'discord-indexer-delta.ps1', 'discord-indexer-query.ps1', 'README.md')) {
+foreach ($name in @('discord-indexer.exe', 'discord-indexer-search.ps1', 'discord-indexer-delta.ps1', 'discord-indexer-query.ps1', 'start-discord-indexer-hidden.vbs', 'README.md')) {
     Copy-Item -LiteralPath (Join-Path $source $name) -Destination $destination -Force
 }
 # Preserve any companion native/runtime libraries in a package built without bundling.

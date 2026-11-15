@@ -155,3 +155,25 @@ last 15 minutes. These limits can be tuned with:
 - The installer does **not** print tokens.
 - MongoDB connection is controlled by env vars (`MONGODB_URI`, `MONGODB_DB`).
 - "All channels" means channels the bot was actually able to enumerate/read/index. Private or forbidden channels will not appear.
+
+### Hidden Windows background startup
+
+For a configured background run, use the packaged launcher rather than scheduling
+the console executable or PowerShell directly. Task Scheduler's Hidden setting
+hides the task entry, not its console window.
+
+Set the task's program to `C:\Windows\System32\wscript.exe` and arguments to:
+
+```text
+//B //Nologo "C:\path\to\start-discord-indexer-hidden.vbs"
+```
+
+The child inherits the launcher's environment. To reuse an existing local
+PowerShell wrapper that loads configuration and redirects logs, append its full
+path as one quoted argument. The wrapper must run the indexer synchronously, not
+detach it. The launcher starts the child hidden, waits, and returns its exit code
+so the scheduler can track its lifetime and prevent overlapping runs. It does not
+register a task, import credentials, or bypass PowerShell execution policy.
+Configure logging in your wrapper before using a hidden run. For troubleshooting,
+run the executable or wrapper directly in a terminal. Windows Script Host must
+be enabled; machines that disable VBScript cannot use this optional launcher.

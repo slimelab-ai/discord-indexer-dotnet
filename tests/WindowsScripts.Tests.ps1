@@ -53,3 +53,6 @@ try {
     Remove-Item Function:mongosh -ErrorAction SilentlyContinue
     Remove-Variable indexerTestQueries, indexerTestTemporaryFiles -Scope Global -ErrorAction SilentlyContinue
 }
+
+# Include the launcher regression checks in the existing Windows CI entry point.
+& (Join-Path $PSScriptRoot 'HiddenLauncher.Tests.ps1')

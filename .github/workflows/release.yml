@@ -10,6 +10,36 @@ permissions:
   contents: write
 
 jobs:
+  windows-release:
+    needs: build-and-release
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Publish Windows
+        shell: pwsh
+        run: ./publish-windows.ps1
+      - name: Package Windows
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem out/windows -File
+          $lines = foreach ($file in $files) {
+            "$( (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant() )  $($file.Name)"
+          }
+          $lines | Set-Content out/discord-indexer-win-x64.sha256 -Encoding ascii
+          Copy-Item out/discord-indexer-win-x64.sha256 out/windows/
+          Compress-Archive -Path out/windows/* -DestinationPath out/discord-indexer-win-x64.zip
+      - name: Upload Windows release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            out/discord-indexer-win-x64.zip
+            out/discord-indexer-win-x64.sha256
+
   build-and-release:
     runs-on: ubuntu-latest
 

@@ -113,6 +113,32 @@ public sealed class ThreadDiscoveryTests
     }
 
     [Fact]
+    public void TextChannelPermissionRecoveryRetriesOnceThenPreservesCompletedHistory()
+    {
+        // Ordinary channel discovery has no thread head, including after access is granted.
+        var state = new BsonDocument
+        {
+            { "done", true }, { "access_blocked", true },
+            { "head_message_id", BsonNull.Value }, { "cursor_before", BsonNull.Value }
+        };
+        Assert.True(ThreadBackfillState.NeedsCatchup(state, null));
+
+        // Rediscovery must not reset an in-flight recovery cursor.
+        state["done"] = false;
+        state["access_blocked"] = false;
+        state["cursor_before"] = "100";
+        Assert.False(ThreadBackfillState.NeedsCatchup(state, null));
+        Assert.Equal("100", BackfillState.ReadCursor(state));
+
+        // Successful history recovery is not repeated on unchanged future discovery.
+        state["done"] = true;
+        Assert.False(ThreadBackfillState.NeedsCatchup(state, null));
+
+        // Still-denied history remains eligible for a later bounded discovery retry.
+        state["access_blocked"] = true;
+        Assert.True(ThreadBackfillState.NeedsCatchup(state, null));
+    }
+    [Fact]
     public void RediscoveryPreservesUnfinishedCursorAndCatchupStopsAtPreviousHead()
     {
         var state = new BsonDocument { { "done", false }, { "head_message_id", "500" }, { "cursor_before", "100" } };

@@ -5,9 +5,10 @@ namespace DiscordIndexer;
 internal static class ThreadBackfillState
 {
     public static bool NeedsCatchup(BsonDocument state, string? head)
-        => head != null && state.GetValue("done", false).AsBoolean &&
+        => state.GetValue("done", false).AsBoolean &&
            (state.GetValue("access_blocked", false).AsBoolean ||
-            !state.TryGetValue("head_message_id", out var old) || !old.IsString || old.AsString != head);
+            (head != null &&
+             (!state.TryGetValue("head_message_id", out var old) || !old.IsString || old.AsString != head)));
 
     public static bool IsAfter(string id, string stopAt)
         => ulong.Parse(id) > ulong.Parse(stopAt);

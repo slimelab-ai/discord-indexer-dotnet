@@ -244,7 +244,7 @@ public class Program
         return ids.Distinct().ToArray();
     }
 
-    private static async Task SeedGuildChannels(string apiBase, string guildId)
+    private static async Task SeedGuildChannels(string apiBase, string guildId, bool discoverThreads = true)
     {
         if (_backfill == null) return;
 
@@ -277,6 +277,7 @@ public class Program
             // Forum/media messages live in child threads, not the parent channel.
             if (type is 0 or 5) await SeedBackfillChannel(channelId!, guildId);
         }
+        if (!discoverThreads) return;
         var discovery = new ThreadDiscovery(RateLimiter.GetAsync, SeedThread, Console.WriteLine);
         await discovery.DiscoverGuild(apiBase, guildId, arr.EnumerateArray().ToArray());
     }
@@ -907,6 +908,22 @@ public class Program
         return null;
     }
 
+    private static readonly ConcurrentDictionary<string, byte> PendingGuildRefreshes = new();
+    private static void QueueGuildRefresh(string guildId)
+    {
+        if (!PendingGuildRefreshes.TryAdd(guildId, 0)) return;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                // Coalesce role/category bursts and keep REST work off the gateway reader.
+                await Task.Delay(1000);
+                await SeedGuildChannels(_apiBase, guildId, discoverThreads: false);
+            }
+            catch (Exception ex) { Console.WriteLine($"WARN: Channel refresh failed for guild {guildId}: {ex.GetType().Name}"); }
+            finally { PendingGuildRefreshes.TryRemove(guildId, out _); }
+        });
+    }
     private static async Task RunGatewayLoop(string gatewayUrl, string token, int intents)
     {
         using var ws = new ClientWebSocket();
@@ -955,9 +972,17 @@ public class Program
                 var t = root.GetProperty("t").GetString();
                 var d = root.GetProperty("d");
 
+                var refreshGuild = ChannelDiscovery.GuildNeedingRefresh(t, d);
+                if (refreshGuild != null) QueueGuildRefresh(refreshGuild);
+
                 if (t == "MESSAGE_CREATE")
                 {
                     await InsertMessage(d, source: "live");
+                }
+                else if (t is "CHANNEL_CREATE" or "CHANNEL_UPDATE")
+                {
+                    await ChannelDiscovery.HandleGatewayEvent(t, d, UpsertChannelFromGuildList,
+                        (channelId, guildId) => SeedBackfillChannel(channelId, guildId));
                 }
                 else if (t is "THREAD_CREATE" or "THREAD_UPDATE")
                 {
